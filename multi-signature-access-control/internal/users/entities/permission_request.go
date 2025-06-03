@@ -14,6 +14,11 @@ type PermissionReq struct {
 	IsSigned    bool      `json:"is_signed" gorm:"type:boolean;default:false"`
 }
 
+type PermissionReqSignature struct {
+	ID        string `gorm:"column:id"`
+	Username  string `gorm:"column:username"`
+	Signature []byte `gorm:"column:signature"`
+}
 type RecentPermissionReqResponse struct {
 	ID         string    `json:"id" gorm:"type:string;primaryKey"`
 	Resource   string    `json:"resource" gorm:"type:varchar(255);not null"`

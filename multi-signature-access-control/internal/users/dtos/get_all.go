@@ -19,19 +19,26 @@ type GetUsersResponse struct {
 }
 
 func NewGetUsersResponse(userDetails []entities.UserDetail) GetUsersResponse {
-	users := make([]UserData, len(userDetails))
-	for i, user := range users {
-		users[i] = UserData{
-			ID:        user.ID,
-			RoleID:    user.RoleID,
-			Role:      user.Role,
-			Username:  user.Username,
-			Email:     user.Email,
-			CreatedAt: user.CreatedAt,
-			UpdatedAt: user.UpdatedAt,
-		}
-	}
+	return userDetailsToGetUsersResponse(userDetails)
+}
 
+func userDetailToUserData(user entities.UserDetail) UserData {
+	return UserData{
+		ID:        user.ID,
+		RoleID:    user.RoleID,
+		Role:      user.Role,
+		Username:  user.Username,
+		Email:     user.Email,
+		CreatedAt: user.CreatedAt,
+		UpdatedAt: user.UpdatedAt,
+	}
+}
+
+func userDetailsToGetUsersResponse(userDetails []entities.UserDetail) GetUsersResponse {
+	users := make([]UserData, len(userDetails))
+	for i, user := range userDetails {
+		users[i] = userDetailToUserData(user)
+	}
 	return GetUsersResponse{Users: users}
 }
 

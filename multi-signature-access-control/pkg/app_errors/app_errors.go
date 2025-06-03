@@ -36,9 +36,10 @@ var (
 	ErrYourEmailWrong    = errors.New("your email is wrong")
 	ErrYourPasswordWrong = errors.New("your password is wrong")
 
-	ErrMissingSignature   = errors.New("Missing signature")
-	ErrInvalidSignature   = errors.New("Invalid signature")
-	ErrPermissionNotFound = errors.New("permission not found")
+	ErrMissingSignature           = errors.New("Missing signature")
+	ErrInvalidSignature           = errors.New("Invalid signature")
+	ErrPermissionNotFound         = errors.New("permission not found")
+	ErrInvalidAggregatedSignature = errors.New("invalid aggregated signature")
 
 	ErrRequestNotFound = errors.New("request not found")
 )

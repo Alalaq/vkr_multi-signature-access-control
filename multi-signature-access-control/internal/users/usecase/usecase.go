@@ -2,6 +2,7 @@ package usecase
 
 import (
 	"context"
+	"crypto/ecdsa"
 	"errors"
 	"multi-signature-access-control/internal/middlewares/accesscontrol"
 	"multi-signature-access-control/internal/users/repository"
@@ -28,6 +29,7 @@ type Usecase interface {
 	SendRequests(ctx context.Context, responsibles []string, resource, username string) error
 	Register(ctx context.Context, request dtos.RegisterRequest) (dtos.RegisterResponse, error)
 	DeleteRequest(ctx context.Context, username string, resource string) error
+	FinalizeRequestIfComplete(ctx context.Context, requestID string) error
 }
 
 type usecase struct {
@@ -169,40 +171,6 @@ func (uc *usecase) DeclineRequest(ctx context.Context, request dtos.PermissionRe
 	return nil
 }
 
-func (uc *usecase) SignRequest(ctx context.Context, request dtos.PermissionReqRequest) error {
-	privKey, err := accesscontrol.StringToPrivateKey(request.PrivateKey)
-	if err != nil {
-		return err
-	}
-	signature, err := accesscontrol.Sign(request.RequestID, privKey)
-	if err != nil {
-		return err
-	}
-
-	hashedPubKey, err := uc.repo.GetHashedPublicKey(ctx, request.Username)
-	if err != nil {
-		return err
-	}
-
-	pubkeyStr, err := utils.DecryptSecret(hashedPubKey)
-	if err != nil {
-		return err
-	}
-
-	pubKey, err := accesscontrol.StringToPublicKey(pubkeyStr)
-	if err != nil {
-		return err
-	}
-
-	if !accesscontrol.Verify(request.RequestID, signature, *pubKey) {
-		return app_errors.ErrInvalidSignature
-	}
-	if err := uc.repo.AcceptRequest(ctx, request.RequestID); err != nil {
-		return err
-	}
-	return nil
-}
-
 func (uc *usecase) GetAccessByUsername(ctx context.Context, username string, resource string) (constants.AccessLevel, error) {
 	access, err := uc.repo.GetAccessByUsername(ctx, username, resource)
 	if err != nil {
@@ -228,4 +196,103 @@ func (uc *usecase) DeleteRequest(ctx context.Context, username string, resource 
 	err := uc.repo.DeleteRequest(ctx, username, resource)
 
 	return err
+}
+func (uc *usecase) SignRequest(ctx context.Context, request dtos.PermissionReqRequest) error {
+	privKey, err := accesscontrol.StringToPrivateKey(request.PrivateKey)
+	if err != nil {
+		return err
+	}
+
+	// Use Schnorr signing instead of ECDSA
+	signature, err := accesscontrol.SchnorrSign(request.RequestID, privKey)
+	if err != nil {
+		return err
+	}
+
+	hashedPubKey, err := uc.repo.GetHashedPublicKey(ctx, request.Username)
+	if err != nil {
+		return err
+	}
+
+	pubkeyStr, err := utils.DecryptSecret(hashedPubKey)
+	if err != nil {
+		return err
+	}
+
+	pubKey, err := accesscontrol.StringToPublicKey(pubkeyStr)
+	if err != nil {
+		return err
+	}
+
+	// Use Schnorr verification instead of ECDSA
+	if !accesscontrol.SchnorrVerify(request.RequestID, signature, *pubKey) {
+		return app_errors.ErrInvalidSignature
+	}
+
+	// Store the Schnorr signature
+	if err := uc.repo.AcceptRequest(ctx, request.RequestID, signature); err != nil {
+		return err
+	}
+
+	if err := uc.FinalizeRequestIfComplete(ctx, request.RequestID); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (uc *usecase) FinalizeRequestIfComplete(ctx context.Context, requestID string) error {
+	signedRequests, err := uc.repo.GetSignedRequests(ctx, requestID)
+	if err != nil {
+		return err
+	}
+
+	resource, err := uc.repo.GetResource(ctx, requestID)
+	if err != nil {
+		return err
+	}
+
+	requiredSigs, err := uc.repo.GetRequiredSignatures(ctx, resource)
+	if err != nil {
+		return err
+	}
+	if len(signedRequests) < requiredSigs {
+		return nil
+	}
+
+	// Collect all signatures and public keys
+	var sigs [][]byte
+	var pubKeys []ecdsa.PublicKey
+
+	for _, r := range signedRequests {
+		sigs = append(sigs, r.Signature)
+
+		hashedPubKey, err := uc.repo.GetHashedPublicKey(ctx, r.Username)
+		if err != nil {
+			return err
+		}
+
+		pubkeyStr, err := utils.DecryptSecret(hashedPubKey)
+		if err != nil {
+			return err
+		}
+
+		pubKey, err := accesscontrol.StringToPublicKey(pubkeyStr)
+		if err != nil {
+			return err
+		}
+		pubKeys = append(pubKeys, *pubKey)
+	}
+
+	// Aggregate Schnorr signatures
+	aggSig, err := accesscontrol.AggregateSchnorrSignatures(sigs)
+	if err != nil {
+		return err
+	}
+
+	// Verify the aggregated signature before storing
+	if !accesscontrol.VerifyAggregatedSchnorr(requestID, aggSig, pubKeys) {
+		return app_errors.ErrInvalidAggregatedSignature
+	}
+
+	return uc.repo.StoreAggregatedApproval(ctx, requestID, resource, aggSig)
 }

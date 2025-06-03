@@ -2,6 +2,7 @@ package repository
 
 import (
 	"context"
+	"encoding/hex"
 	"errors"
 	"github.com/google/uuid"
 	"gorm.io/gorm"
@@ -23,12 +24,16 @@ type Repository interface {
 	GetNewRequestsByUsername(ctx context.Context, username string) ([]entities.PermissionReq, error)
 	GetPermissionsByUsername(ctx context.Context, username string) ([]entities.PermissionReqResponse, error)
 	DeclineRequest(ctx context.Context, id string) error
-	AcceptRequest(ctx context.Context, id string) error
+	AcceptRequest(ctx context.Context, id string, signature []byte) error
 	GetHashedPublicKey(ctx context.Context, username string) (string, error)
 	GetResponsiblesIDsByResource(ctx context.Context, resource string) ([]string, error)
 	CreateRequests(ctx context.Context, username, resource string, responsiblesIDs []string) error
 	CreateUser(ctx context.Context, user *entities.CreateUser) (entities.UserDetail, error)
 	DeleteRequest(ctx context.Context, username string, resource string) error
+	GetSignedRequests(ctx context.Context, requestID string) ([]entities.PermissionReqSignature, error)
+	GetResource(ctx context.Context, requestID string) (string, error)
+	GetRequiredSignatures(ctx context.Context, resource string) (int, error)
+	StoreAggregatedApproval(ctx context.Context, requestID string, resource string, signature []byte) error
 }
 
 func NewUsersRepository(db *gorm.DB) Repository {
@@ -77,20 +82,17 @@ func (r *repositoryImpl) Detail(ctx context.Context, opts ...entities.UserDetail
 func (r *repositoryImpl) CreateUser(ctx context.Context, user *entities.CreateUser) (entities.UserDetail, error) {
 	var userDetail entities.UserDetail
 
-	// The query for creating the user (without RETURNING)
 	query := `
 		INSERT INTO users (id, role_id, username, email, hash_password, hash_public_key, created_at)
 		VALUES (?, ?, ?, ?, ?, ?, ?)
 	`
 
-	// Execute the insert query
 	err := r.db.WithContext(ctx).Exec(query,
 		user.ID, user.RoleID, user.Username, user.Email, user.Password, user.PublicKey, time.Now()).Error
 	if err != nil {
 		return entities.UserDetail{}, err
 	}
 
-	// Retrieve the ID of the last inserted user
 	err = r.db.WithContext(ctx).Raw(`
 		SELECT id, role_id, username, email, hash_password, created_at, updated_at
 		FROM users WHERE id = LAST_INSERT_ID()
@@ -232,13 +234,16 @@ func (r *repositoryImpl) DeclineRequest(ctx context.Context, id string) error {
 		}).Error
 }
 
-func (r *repositoryImpl) AcceptRequest(ctx context.Context, id string) error {
+func (r *repositoryImpl) AcceptRequest(ctx context.Context, id string, signature []byte) error {
+	signatureHex := hex.EncodeToString(signature)
+
 	return r.db.WithContext(ctx).
 		Table("permission_requests").
 		Where("id = ?", id).
 		Updates(map[string]interface{}{
 			"is_answered": true,
 			"is_signed":   true,
+			"signature":   signatureHex,
 			"updated_at":  time.Now(),
 		}).Error
 }
@@ -321,4 +326,65 @@ func (r *repositoryImpl) CreateRequests(ctx context.Context, username, resource 
 	}
 
 	return r.db.WithContext(ctx).Table("permission_requests").Create(&requests).Error
+}
+
+func (r *repositoryImpl) GetSignedRequests(ctx context.Context, requestID string) ([]entities.PermissionReqSignature, error) {
+	var results []entities.PermissionReqSignature
+
+	err := r.db.WithContext(ctx).
+		Table("permission_requests").
+		Select("id, signature").
+		Where("id = ? AND is_signed = true", requestID).
+		Find(&results).Error
+
+	if err != nil {
+		return nil, app_errors.InternalServerError(err)
+	}
+	return results, nil
+}
+
+func (r *repositoryImpl) GetResource(ctx context.Context, requestID string) (string, error) {
+	var resource string
+	err := r.db.WithContext(ctx).
+		Table("permission_requests").
+		Select("resource").
+		Where("id = ?", requestID).
+		Take(&resource).Error
+
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return "", app_errors.NotFound(app_errors.ErrRequestNotFound)
+	}
+	if err != nil {
+		return "", app_errors.InternalServerError(err)
+	}
+	return resource, nil
+}
+
+func (r *repositoryImpl) GetRequiredSignatures(ctx context.Context, resource string) (int, error) {
+	var required int
+	err := r.db.WithContext(ctx).
+		Table("permissions").
+		Select("required_signatures").
+		Where("resource = ?", resource).
+		Limit(1).
+		Take(&required).Error
+
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return 0, app_errors.NotFound(app_errors.ErrPermissionNotFound)
+	}
+	if err != nil {
+		return 0, app_errors.InternalServerError(err)
+	}
+	return required, nil
+}
+
+func (r *repositoryImpl) StoreAggregatedApproval(ctx context.Context, requestID string, resource string, signature []byte) error {
+	return r.db.WithContext(ctx).
+		Table("aggregated_approvals").
+		Create(map[string]interface{}{
+			"request_id":           requestID,
+			"resource":             resource,
+			"aggregated_signature": signature,
+			"created_at":           time.Now(),
+		}).Error
 }

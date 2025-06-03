@@ -28,9 +28,21 @@ CREATE TABLE permission_requests (
                              updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                              is_signed BOOLEAN DEFAULT FALSE,
                              is_answered BOOLEAN DEFAULT FALSE,
+                             signature TEXT,
                              FOREIGN KEY (requester_id) REFERENCES users(id) ON DELETE CASCADE,
                              FOREIGN KEY (requestee_id) REFERENCES users(id) ON DELETE CASCADE
 );
+
+CREATE TABLE aggregated_approvals (
+                                      request_id VARCHAR(255) PRIMARY KEY,
+                                      resource VARCHAR(255) NOT NULL,
+                                      username VARCHAR(255) NOT NULL,
+                                      aggregated_signature TEXT NOT NULL,
+                                      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                                      FOREIGN KEY (request_id) REFERENCES permission_requests(id) ON DELETE CASCADE,
+                                      FOREIGN KEY (username) REFERENCES users(username) ON DELETE CASCADE
+);
+
 
 CREATE TABLE permissions (
                           id VARCHAR(255) PRIMARY KEY,
